@@ -1,0 +1,50 @@
+{
+  "name": "meeting1_platform_sync",
+  "audio": "eval/recordings/meeting1_platform_sync.wav",
+  "description": "Platform team sync. Tests: jargon (Kubernetes, Helm, NGINX, Traefik, Grafana, PagerDuty, Terraform, PostgreSQL, Redis, p99), a rejected proposal, a deferred proposal, an unresolved proposal, a task with no owner, a request that is later accepted, numbers and negations.",
+  "user_glossary": "Kubernetes, Grafana, PostgreSQL",
+  "attendees": "Priya, Rahul, Ankit",
+  "turns": [
+    {"speaker": "Priya", "text": "Okay, let's get started. Three things today: the Kubernetes migration, the Grafana alerts, and the PostgreSQL upgrade."},
+    {"speaker": "Rahul", "text": "On the migration, we moved 14 of the 20 services to the new Kubernetes cluster last week. The remaining 6 are blocked on the Helm charts."},
+    {"speaker": "Priya", "text": "What's blocking the Helm charts exactly?"},
+    {"speaker": "Rahul", "text": "The ingress config. Our NGINX annotations don't work with the new controller."},
+    {"speaker": "Ankit", "text": "I think we should switch to Traefik as the ingress controller. It handles that config natively."},
+    {"speaker": "Rahul", "text": "I don't think that's a good idea right now. Switching controllers mid-migration adds risk, and nobody on the team has run Traefik in production."},
+    {"speaker": "Priya", "text": "Agreed. Let's not switch controllers this quarter."},
+    {"speaker": "Rahul", "text": "Then I'll rewrite the annotations for the 6 remaining services by Thursday."},
+    {"speaker": "Priya", "text": "Great. Next, the Grafana alerts. We got paged 42 times last week and most of them were false positives."},
+    {"speaker": "Ankit", "text": "Most of them come from the p99 latency alert. The threshold is 300 milliseconds, which is too tight for the batch endpoints."},
+    {"speaker": "Ankit", "text": "I propose we raise the threshold to 500 milliseconds for the batch endpoints only."},
+    {"speaker": "Priya", "text": "That sounds reasonable. Rahul, any objection?"},
+    {"speaker": "Rahul", "text": "No objection. Let's do it."},
+    {"speaker": "Ankit", "text": "Also, can we route the batch alerts to Slack instead of PagerDuty?"},
+    {"speaker": "Rahul", "text": "Yes, good idea, PagerDuty should only wake people up for real outages."},
+    {"speaker": "Priya", "text": "Okay, both decided. Someone needs to update the alert rules in Terraform."},
+    {"speaker": "Ankit", "text": "I can't take it this week, I'm out from Wednesday."},
+    {"speaker": "Priya", "text": "Fine, we'll leave it unassigned for now, but it has to be done before the next on-call rotation."},
+    {"speaker": "Priya", "text": "Last item, the PostgreSQL upgrade from version 13 to 16."},
+    {"speaker": "Ankit", "text": "We should do it during the maintenance window on the 15th. The downtime should be under 10 minutes."},
+    {"speaker": "Rahul", "text": "Let's not fix the date yet. We haven't tested the upgrade on the staging replica."},
+    {"speaker": "Priya", "text": "Okay, let's revisit the date next week once staging is tested."},
+    {"speaker": "Priya", "text": "Ankit, can you run the upgrade on staging and share the results?"},
+    {"speaker": "Ankit", "text": "Sure, I'll do that by Tuesday."},
+    {"speaker": "Rahul", "text": "One more thing. Should we also move the Redis cache into the cluster?"},
+    {"speaker": "Priya", "text": "Good question, but we're out of time. Thanks everyone, and thanks Rahul for taking the annotations."}
+  ],
+  "glossary_terms_to_score": ["Kubernetes", "Helm", "NGINX", "Traefik", "Grafana", "PagerDuty", "Terraform", "PostgreSQL", "Redis", "p99"],
+  "decisions": [
+    "Raise the p99 latency alert threshold to 500 milliseconds for the batch endpoints only",
+    "Route the batch alerts to Slack instead of PagerDuty"
+  ],
+  "not_decisions": [
+    "Switch the ingress controller to Traefik",
+    "Do the PostgreSQL upgrade in the maintenance window on the 15th",
+    "Move the Redis cache into the cluster"
+  ],
+  "action_items": [
+    {"task": "Rewrite the NGINX annotations for the 6 remaining services", "owner": "Rahul", "owner_type": "self", "deadline": "by Thursday"},
+    {"task": "Update the alert rules in Terraform", "owner": null, "owner_type": null, "deadline": "before the next on-call rotation"},
+    {"task": "Run the PostgreSQL upgrade on staging and share the results", "owner": "Ankit", "owner_type": "named", "deadline": "by Tuesday"}
+  ]
+}
