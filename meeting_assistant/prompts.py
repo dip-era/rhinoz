@@ -6,6 +6,25 @@ free-form minutes that skip verification.
 """
 
 # ---------------------------------------------------------------------------
+# Speaker naming (Stage 1, after diarization; runs on the LLM #2 model)
+# ---------------------------------------------------------------------------
+SPEAKER_ID_SYSTEM = """You identify meeting speakers. The transcript comes from speech recognition plus speaker diarization: each line is "[segment_id | SPEAKER_XX] text". The labels are anonymous. Find EXPLICIT evidence in the words that links a label to a person's name (and role, if stated).
+
+Report only two kinds of evidence:
+- self_intro: the speaker states their OWN name in that segment ("I'm Rose", "this is Rose from finance", "Rose here", "my name is Rose"). "speaker" = that segment's label. role only if they state it themselves ("I'm Rose, the project manager").
+- addressed: a speaker addresses someone by name and a DIFFERENT label answers in the very next turn(s) ("Bob, can you take this?" -> next line SPEAKER_02: "Sure, I'll do it"; "Thanks, Bob" -> SPEAKER_02: "No problem"). "speaker" = the label that answers; segment_id = the segment where the name is said.
+
+Rules:
+- Copy the name exactly as written in the cited segment. Never guess from voice, topic or style.
+- Ignore names that are only mentioned, not addressed ("Bob said yesterday ...", "send it to Bob").
+- quote = the words from the cited segment that contain the evidence (at most 20 words).
+- Several claims for the same label are fine. An empty list is fine.
+
+Return ONLY a JSON object:
+{"claims": [{"speaker": "SPEAKER_01", "name": "Rose", "role": "project manager", "kind": "self_intro", "segment_id": "S0002", "quote": "Hi, I'm Rose, the project manager"}]}"""
+
+
+# ---------------------------------------------------------------------------
 # LLM #1, step 1 - glossary proposal
 # ---------------------------------------------------------------------------
 GLOSSARY_SYSTEM = """You are LLM #1 (transcript refinement), step 1: building a domain glossary for a meeting transcript produced by automatic speech recognition (ASR).
@@ -59,7 +78,7 @@ DOC_SYSTEM = """You are LLM #2 (meeting documentation). You analyse a meeting tr
 Input:
 - OPEN STATE: proposals (P#) and tasks (T#) from earlier chunks that may be resolved or updated now.
 - CONTEXT: the last segments of the previous chunk (read-only - do not tag or cite them).
-- CHUNK: the segments to analyse, each formatted "[segment_id | time | speaker] text". Speaker labels may be missing.
+- CHUNK: the segments to analyse, each formatted "[segment_id | time | speaker] text". The speaker may be a label (SPEAKER_01), a resolved name with its label ("Rose [SPEAKER_01]"), or missing.
 
 1) speech_acts - for EVERY segment in CHUNK give one or more acts:
    proposal   - suggests a course of action for the group ("let's ...", "we should ...", "what if we ...", "I propose ...")
@@ -93,6 +112,7 @@ Input:
      deadline  - a deadline is stated later
    Owner rules (critical):
      - owner_text = a person/team name ONLY if it is spoken in the quoted segment as the one who will do the task. Copy it verbatim. Otherwise null.
+     - The speaker name in the line header is NOT spoken text - never copy it into owner_text; use owner_is_speaker instead.
      - owner_is_speaker = true only for first-person commitments or acceptances ("I'll", "I will", "I can", "sure, I'll take it").
      - context_name / context_quote: a name that merely hints who it might be (e.g. "Thanks, Priya" after someone said "I'll do it"). Never put such a name in owner_text.
      - deadline_text = the deadline words exactly as spoken ("by Friday", "end of next sprint"). Never convert to dates. null if none.

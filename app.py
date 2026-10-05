@@ -142,9 +142,31 @@ if st.button("Generate raw transcript", type="primary" if sess.transcript is Non
 if sess.transcript is None:
     st.stop()
 tr = sess.transcript
-raw_txt = transcript_text(tr.segments, tr.diarized)
+names = sess.speaker_names  # SPEAKER_xx -> "Rose (Project Manager)" when the meeting says so
+raw_txt = transcript_text(tr.segments, tr.diarized, names)
 st.caption(f"{len(tr.segments)} segments · {len(tr.words)} words · speakers "
-           f"{'diarized' if tr.diarized else 'not identified'} · model `{tr.asr_model}`")
+           f"{'diarized' if tr.diarized else 'not identified (turn on diarization to label/name speakers)'} · "
+           f"model `{tr.asr_model}`")
+if sess.speakers:
+    with st.expander(f"Speakers: {sum(1 for s in sess.speakers if s.name)} of {len(sess.speakers)} named "
+                     "from the conversation", expanded=True):
+        st.dataframe(
+            [
+                {
+                    "label": sp.label,
+                    "shown as": sp.display_name,
+                    "confidence": {"high": "high (self-introduced)", "low": "low (only addressed by name)",
+                                   "none": "not mentioned"}[sp.confidence],
+                    "evidence": " | ".join(f"{e.kind} {e.segment_id}: “{e.quote}”" for e in sp.evidence) or "-",
+                    "notes": "; ".join(sp.notes),
+                }
+                for sp in sess.speakers
+            ],
+            use_container_width=True,
+            hide_index=True,
+        )
+for w in sess.warnings:
+    st.caption("⚠ " + w)
 st.text_area("Raw transcript (speech-to-text output, before any LLM)", raw_txt, height=300)
 st.download_button("Download raw transcript (.txt)", raw_txt, "raw_transcript.txt")
 
@@ -158,7 +180,7 @@ if st.button("Generate refined transcript", type="primary" if sess.refinement is
 if sess.refinement is None:
     st.stop()
 ref = sess.refinement
-refined_txt = transcript_text(ref.refined_segments, tr.diarized)
+refined_txt = transcript_text(ref.refined_segments, tr.diarized, names)
 n_acc = sum(v.accepted for v in ref.verdicts)
 st.caption(f"{n_acc} of {len(ref.verdicts)} proposed edits accepted · {len(ref.candidates)} candidate spans · "
            f"acoustic verifier: {ref.acoustic_model if ref.acoustic_used else 'not used'}")
@@ -177,7 +199,7 @@ with t_side:
     c1.markdown("**Raw (ASR)**")
     c2.markdown("**Refined**")
     for s in ref.refined_segments:
-        spk = f"{s.speaker}: " if s.speaker else ""
+        spk = f"{names.get(s.speaker, s.speaker)}: " if s.speaker else ""
         c1.markdown(f"`{s.id}` {spk}{html.escape(s.raw_text)}", unsafe_allow_html=True)
         c2.markdown(f"`{s.id}` {spk}" + _diff_html(s.raw_text, s.text), unsafe_allow_html=True)
 with t_ref:
@@ -244,14 +266,15 @@ with t_dec:
             st.audio(clip_wav_bytes(audio, d.provenance.start, d.provenance.end), format="audio/wav")
             st.markdown("**Lifecycle**")
             for e in d.history:
-                spk = f" ({e.speaker})" if e.speaker else ""
+                spk = f" ({names.get(e.speaker, e.speaker)})" if e.speaker else ""
                 st.markdown(f"- `{e.status}` at {e.segment_id} [{fmt_ts(e.start)}]{spk}: “{e.quote}”")
 
 with t_act:
     if not rec.action_items:
         st.info("No action items were assigned.")
     for a in rec.action_items:
-        owner = a.owner + (" (speaker label)" if a.owner_source == "speaker_label" else "")
+        owner = a.owner + {"speaker_label": " (speaker label)",
+                           "speaker_name": " (self-introduced speaker)"}.get(a.owner_source, "")
         with st.expander(f"{a.id}: {a.task}  ·  owner: {owner}  ·  deadline: {a.deadline}"):
             if a.owner_annotation:
                 st.caption(f"Owner annotation (not a stated owner): {a.owner_annotation}")

@@ -18,14 +18,14 @@ from typing import Callable
 
 import numpy as np
 
-from . import asr, audio_io, documentation, record as record_mod, refine, verification
+from . import asr, audio_io, speakers as speakers_mod, documentation, record as record_mod, refine, verification
 from .config import Settings
 from .errors import PipelineError
 from .glossary import parse_term_list
 from .llm_client import LLMClient
 from .record import transcript_text
 from .refine import RefinementResult
-from .schemas import MeetingRecord, Transcript
+from .schemas import MeetingRecord, SpeakerIdentity, Transcript
 
 Progress = Callable[[str, str, float | None], None]
 
@@ -45,10 +45,15 @@ class PipelineSession:
     user_terms: list[str] = field(default_factory=list)
     attendees: list[str] = field(default_factory=list)
     transcript: Transcript | None = None
+    speakers: list[SpeakerIdentity] = field(default_factory=list)
     refinement: RefinementResult | None = None
     record: MeetingRecord | None = None
     files: dict[str, Path] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+
+    @property
+    def speaker_names(self) -> dict[str, str]:
+        return speakers_mod.name_map(self.speakers)
 
 
 @dataclass
@@ -62,6 +67,12 @@ class PipelineResult:
 def _llm1(s: Settings) -> LLMClient:
     cache = s.cache_dir if s.use_llm_cache else None
     return LLMClient(s.llm1_model, s.groq_api_key, "LLM #1 (refinement)", cache, s.llm1_tpm)
+
+
+def _speaker_llm(s: Settings) -> LLMClient:
+    cache = s.cache_dir if s.use_llm_cache else None
+    return LLMClient(s.speaker_id_model or s.llm2_model, s.groq_api_key, "Speaker naming", cache, s.llm2_tpm,
+                     reasoning_effort=s.llm2_reasoning_effort)
 
 
 def _llm2(s: Settings) -> LLMClient:
@@ -95,6 +106,7 @@ def stage1_transcribe(sess: PipelineSession, glossary_text: str = "", attendees_
     progress = progress or _default_progress
     s = sess.settings
     sess.transcript = sess.refinement = sess.record = None  # later stages are now stale
+    sess.speakers = []
     sess.warnings = []
     sess.user_terms = parse_term_list(glossary_text)
     sess.attendees = parse_term_list(attendees_text)
@@ -112,9 +124,21 @@ def stage1_transcribe(sess: PipelineSession, glossary_text: str = "", attendees_
         except Exception as e:
             sess.warnings.append(f"Diarization skipped ({type(e).__name__}: {e}); self-commitment owners will be 'unspecified'.")
             progress("Stage 1 · Diarization", f"skipped: {e}", None)
+    if transcript.diarized:  # name speakers only from what the meeting itself says
+        llm = None
+        if s.speaker_naming and s.groq_api_key:
+            llm = _speaker_llm(s)
+        elif s.speaker_naming:
+            sess.warnings.append("Speaker naming skipped: GROQ_API_KEY is not set; speakers keep SPEAKER_xx labels.")
+        try:
+            sess.speakers, w = speakers_mod.resolve_speakers(transcript, llm, s, sess.attendees, progress)
+            sess.warnings += w
+        except PipelineError as e:
+            sess.speakers, _ = speakers_mod.resolve_speakers(transcript, None, s)
+            sess.warnings.append(f"Speaker naming skipped ({e}); speakers keep SPEAKER_xx labels.")
     sess.transcript = transcript
     p = sess.output_dir / "raw_transcript.txt"
-    p.write_text(transcript_text(transcript.segments, transcript.diarized), encoding="utf-8")
+    p.write_text(transcript_text(transcript.segments, transcript.diarized, sess.speaker_names), encoding="utf-8")
     sess.files["raw_transcript.txt"] = p
     progress("Stage 1 · ASR", f"Raw transcript ready: {len(transcript.segments)} segments, {len(transcript.words)} words", 1.0)
     return transcript
@@ -129,7 +153,7 @@ def stage2_refine(sess: PipelineSession, progress: Progress | None = None) -> Re
                         _llm1(sess.settings), progress)
     sess.refinement = ref
     p = sess.output_dir / "refined_transcript.txt"
-    p.write_text(transcript_text(ref.refined_segments, sess.transcript.diarized), encoding="utf-8")
+    p.write_text(transcript_text(ref.refined_segments, sess.transcript.diarized, sess.speaker_names), encoding="utf-8")
     sess.files["refined_transcript.txt"] = p
     return ref
 
@@ -143,19 +167,21 @@ def stage3_document(sess: PipelineSession, progress: Progress | None = None) -> 
     if s.llm1_model == s.llm2_model:
         warnings.append("LLM #1 and LLM #2 are the same model; the problem statement expects two distinct models.")
     llm2 = _llm2(s)
+    names = sess.speaker_names
 
-    life = documentation.extract_lifecycle(ref.refined_segments, tr.diarized, llm2, s, progress)  # 3a
+    life = documentation.extract_lifecycle(ref.refined_segments, tr.diarized, llm2, s, progress, names)  # 3a
     warnings += life.warnings
-    ver = verification.verify(life, ref.refined_segments, tr.diarized, s, progress)  # 4
+    ver = verification.verify(life, ref.refined_segments, tr.diarized, s, progress,
+                              speakers_mod.identity_map(sess.speakers))  # 4
     warnings += ver.warnings
     summary, minutes, w = documentation.summarize(  # 3b, consistent with the verified lists
         ref.refined_segments, tr.diarized, ver.decisions, ver.action_items,
-        ver.rejected + ver.deferred + ver.unresolved, llm2, s, progress,
+        ver.rejected + ver.deferred + ver.unresolved, llm2, s, progress, names,
     )
     warnings += w
     rec = record_mod.build_record(
         source_file=sess.input_path.name, transcript=tr, refinement=ref, lifecycle=life, verified=ver,
-        summary=summary, minutes=minutes, settings=s, warnings=warnings,
+        summary=summary, minutes=minutes, settings=s, warnings=warnings, speakers=sess.speakers,
     )
     sess.record = rec
     sess.files.update(record_mod.save_outputs(rec, sess.output_dir))

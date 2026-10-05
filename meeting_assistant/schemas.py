@@ -144,6 +144,29 @@ class RefinedSegment(BaseModel):
     edit_ids: list[str] = []
 
 
+# ---- speaker naming (Stage 1, after diarization) -------------------------------
+
+
+class SpeakerEvidence(BaseModel):
+    kind: Literal["self_intro", "addressed"]
+    name: str  # copied from the transcript
+    role: Optional[str] = None  # only if spoken in the same segment
+    segment_id: str
+    quote: str
+    weight: int
+
+
+class SpeakerIdentity(BaseModel):
+    label: str  # diarization label, e.g. SPEAKER_01 (stays the canonical id)
+    name: Optional[str] = None
+    role: Optional[str] = None
+    confidence: Literal["high", "low", "none"] = "none"  # high = self-introduced, low = only addressed by name
+    score: int = 0
+    display_name: str  # "Rose (Project Manager)" or the label
+    evidence: list[SpeakerEvidence] = []
+    notes: list[str] = []
+
+
 # ---- lifecycle state (Stage 3) ----------------------------------------------
 
 
@@ -298,6 +321,21 @@ class TaskUpdateOut(_OwnerFields):
     quote: str = ""
 
 
+class SpeakerClaimOut(BaseModel):
+    speaker: str
+    name: str
+    role: Optional[str] = None
+    kind: str
+    segment_id: str
+    quote: str = ""
+
+    _n = field_validator("role", mode="before")(_none_if_blank)
+
+
+class SpeakerIdOut(BaseModel):
+    claims: list[SpeakerClaimOut] = []
+
+
 class DocChunkOut(BaseModel):
     speech_acts: list[SpeechActOut] = []
     new_proposals: list[NewProposalOut] = []
@@ -361,7 +399,7 @@ class ActionItem(BaseModel):
     id: str
     task: str
     owner: str = "unspecified"
-    owner_source: Literal["stated", "speaker_label", "unspecified"] = "unspecified"
+    owner_source: Literal["stated", "speaker_name", "speaker_label", "unspecified"] = "unspecified"
     owner_annotation: Optional[str] = None  # context-inferred hint; NEVER the owner
     deadline: str = "unspecified"  # verbatim as spoken
     kind: str
@@ -414,6 +452,7 @@ class MeetingRecord(BaseModel):
     rejected_proposals: list[ProposalSummary] = []
     deferred_proposals: list[ProposalSummary] = []
     unresolved_proposals: list[ProposalSummary] = []
+    speakers: list[SpeakerIdentity] = []
     raw_transcript: Transcript
     refined_transcript: list[RefinedSegment]
     glossary: list[GlossaryTerm] = []

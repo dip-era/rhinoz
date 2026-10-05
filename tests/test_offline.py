@@ -171,6 +171,54 @@ def test_markdown_from_json_renders_empty_lists():
     assert "No decisions were reached" in md and "No action items were assigned" in md
 
 
+
+def test_speaker_naming_rules():
+    from meeting_assistant.record import transcript_text
+    from meeting_assistant.speakers import name_map, resolve_speakers
+    from meeting_assistant.verification import verify as _verify
+
+    s = Settings()
+    tr = make_transcript([
+        ("Hi everyone, I'm Rose, the project manager.", None, "SPEAKER_00"),
+        ("Bob, can you check the logs?", None, "SPEAKER_00"),
+        ("Sure, I'll check them by Friday.", None, "SPEAKER_01"),
+        ("Thanks, Carol.", None, "SPEAKER_01"),
+        ("Let's also ask Dave about it.", None, "SPEAKER_02"),
+    ], diarized=True)
+    claims = {"claims": [
+        {"speaker": "SPEAKER_00", "name": "Rose", "role": "project manager", "kind": "self_intro",
+         "segment_id": "S0001", "quote": "I'm Rose, the project manager"},
+        {"speaker": "SPEAKER_01", "name": "Bob", "kind": "addressed", "segment_id": "S0002",
+         "quote": "Bob, can you check the logs?"},
+        # invalid: SPEAKER_02 does not answer right after "Thanks, Carol" (S0004 is SPEAKER_01 talking)
+        {"speaker": "SPEAKER_00", "name": "Carol", "kind": "addressed", "segment_id": "S0004", "quote": "Thanks, Carol."},
+        # invalid: Dave is only mentioned, and the name is not a self-introduction by SPEAKER_02
+        {"speaker": "SPEAKER_02", "name": "Dave", "kind": "self_intro", "segment_id": "S0002", "quote": "ask Dave"},
+    ]}
+    ids, warns = resolve_speakers(tr, FakeLLM({"SpeakerIdOut": claims}), s)
+    by = {i.label: i for i in ids}
+    assert (by["SPEAKER_00"].display_name, by["SPEAKER_00"].confidence) == ("Rose (Project Manager)", "high")
+    assert (by["SPEAKER_01"].display_name, by["SPEAKER_01"].confidence) == ("Bob", "low")
+    assert by["SPEAKER_02"].display_name == "SPEAKER_02" and len(warns) == 2
+    txt = transcript_text(tr.segments, True, name_map(ids))
+    assert "Rose (Project Manager): Hi everyone" in txt and "SPEAKER_02: Let's" in txt
+
+    # owners: an "addressed"-only name never becomes the owner, a self-introduced one does
+    segs = [RefinedSegment(id=x.id, start=x.start, end=x.end, speaker=x.speaker, text=x.text, raw_text=x.text)
+            for x in tr.segments]
+    reply = DocChunkOut.model_validate({
+        "speech_acts": [{"segment_id": "S0003", "acts": ["commitment"]}],
+        "new_tasks": [{"ref": "M1", "description": "Check the logs", "kind": "self_commitment", "segment_id": "S0003",
+                       "quote": "I'll check them by Friday", "owner_is_speaker": True, "deadline_text": "by Friday"}],
+    })
+    life = extract_lifecycle(segs, True, FakeLLM({"DocChunkOut": reply.model_dump()}), s)
+    a = _verify(life, segs, True, s, speakers=by).action_items[0]
+    assert (a.owner, a.owner_source) == ("SPEAKER_01", "speaker_label") and "probably Bob" in a.owner_annotation
+    by["SPEAKER_01"].confidence = "high"
+    by["SPEAKER_01"].evidence[0].kind = "self_intro"
+    a = _verify(life, segs, True, s, speakers=by).action_items[0]
+    assert (a.owner, a.owner_source) == ("Bob", "speaker_name")
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

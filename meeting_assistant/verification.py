@@ -14,7 +14,7 @@ from typing import Callable
 
 from .config import Settings
 from .documentation import LifecycleResult
-from .schemas import ActionItem, Decision, Proposal, ProposalSummary, Provenance, RefinedSegment, Task
+from .schemas import SpeakerIdentity, ActionItem, Decision, Proposal, ProposalSummary, Provenance, RefinedSegment, Task
 from .utils import find_verbatim, fmt_ts
 
 Progress = Callable[[str, str, float | None], None]
@@ -50,7 +50,8 @@ def _proposal_summary(p: Proposal, segmap, order) -> ProposalSummary:
     )
 
 
-def _verify_task(t: Task, idx: int, segmap, order, diarized: bool, thr: float) -> ActionItem:
+def _verify_task(t: Task, idx: int, segmap, order, diarized: bool, thr: float,
+                 speakers: dict[str, SpeakerIdentity] | None = None) -> ActionItem:
     notes: list[str] = []
     owner, owner_source, annotation = "unspecified", "unspecified", None
 
@@ -66,7 +67,17 @@ def _verify_task(t: Task, idx: int, segmap, order, diarized: bool, thr: float) -
             notes.append(f"owner '{ev.owner_text}' not found in {ev.segment_id} - discarded")
         elif ev.owner_is_speaker:
             if diarized and seg.speaker:
-                owner, owner_source = seg.speaker, "speaker_label"
+                ident = (speakers or {}).get(seg.speaker)
+                if ident and ident.name and ident.confidence == "high":
+                    # the speaker said their own name ("I'm Rose") and committed ("I'll do it"): both are audio facts
+                    src = next(e for e in ident.evidence if e.kind == "self_intro")
+                    owner, owner_source = ident.name, "speaker_name"
+                    annotation = f"{seg.speaker} introduced themself as {ident.name} in {src.segment_id}: “{src.quote}”."
+                else:
+                    owner, owner_source = seg.speaker, "speaker_label"
+                    if ident and ident.name:
+                        annotation = (f"{seg.speaker} is probably {ident.name} (addressed by name, never "
+                                      "self-introduced); not stated as the owner.")
                 break
             notes.append(f"self-commitment in {ev.segment_id}, but speaker unknown (diarization off)")
             annotation = f"Self-commitment by the speaker of {ev.segment_id} ({fmt_ts(seg.start)}); speaker not identified."
@@ -80,7 +91,7 @@ def _verify_task(t: Task, idx: int, segmap, order, diarized: bool, thr: float) -
             break
         notes.append(f"deadline '{ev.deadline_text}' not found in {ev.segment_id} - discarded")
 
-    if owner_source != "stated":
+    if owner_source not in ("stated", "speaker_name"):
         for h in t.name_hints:
             seg = segmap.get(h.segment_id)
             name = find_verbatim(h.name, seg.text, thr) if seg else None
@@ -124,6 +135,7 @@ def verify(
     diarized: bool,
     settings: Settings,
     progress: Progress = lambda *a: None,
+    speakers: dict[str, SpeakerIdentity] | None = None,
 ) -> VerifiedOutputs:
     progress(STAGE, "Checking owners, deadlines and provenance", None)
     segmap = {s.id: s for s in segments}
@@ -152,7 +164,7 @@ def verify(
         if t.status == "declined":
             continue
         target = actions if t.status == "confirmed" else unconfirmed
-        item = _verify_task(t, len(actions) + len(unconfirmed) + 1, segmap, order, diarized, thr)
+        item = _verify_task(t, len(actions) + len(unconfirmed) + 1, segmap, order, diarized, thr, speakers)
         target.append(item)
     for i, a in enumerate(actions, 1):
         a.id = f"A{i}"

@@ -53,6 +53,11 @@ class Settings:
     hf_token: str | None = None
     num_speakers: int | None = None
 
+    # ---- Speaker naming (needs diarization) -------------------------------
+    speaker_naming: bool = True
+    speaker_id_model: str | None = None  # default: the LLM #2 model
+    speaker_id_chunk_words: int = 2000  # < 2,500 words per call (fits the 8k tokens/minute free tier)
+
     # ---- LLMs (Groq free tier) ---------------------------------------------
     groq_api_key: str | None = None
     llm1_model: str = "llama-3.3-70b-versatile"  # refinement
@@ -102,6 +107,8 @@ class Settings:
         ns = _env("NUM_SPEAKERS", None)
         s.num_speakers = int(ns) if ns else None
         s.groq_api_key = _env("GROQ_API_KEY", None)
+        s.speaker_naming = _env_bool("SPEAKER_NAMING", s.speaker_naming)
+        s.speaker_id_model = _env("SPEAKER_ID_MODEL", None)
         s.llm1_model = _env("LLM1_MODEL", s.llm1_model)
         s.llm2_model = _env("LLM2_MODEL", s.llm2_model)
         s.llm1_tpm = _env_num("LLM1_TPM", s.llm1_tpm, int)

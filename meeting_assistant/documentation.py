@@ -50,8 +50,11 @@ class LifecycleResult:
     warnings: list[str] = field(default_factory=list)
 
 
-def seg_line(seg: RefinedSegment, diarized: bool) -> str:
-    spk = f" | {seg.speaker}" if diarized and seg.speaker else ""
+def seg_line(seg: RefinedSegment, diarized: bool, names: dict[str, str] | None = None) -> str:
+    spk = ""
+    if diarized and seg.speaker:
+        nm = (names or {}).get(seg.speaker)
+        spk = f" | {nm} [{seg.speaker}]" if nm and nm != seg.speaker else f" | {seg.speaker}"
     return f"[{seg.id} | {fmt_ts(seg.start)}{spk}] {seg.text}"
 
 
@@ -75,6 +78,7 @@ def extract_lifecycle(
     llm: LLMClient,
     settings: Settings,
     progress: Progress = lambda *a: None,
+    names: dict[str, str] | None = None,
 ) -> LifecycleResult:
     segmap = {s.id: s for s in segments}
     order = {s.id: i for i, s in enumerate(segments)}
@@ -116,8 +120,8 @@ def extract_lifecycle(
         chunk_ids = {s.id for s in chunk}
         user = (
             f"OPEN STATE:\n{_open_state(proposals, tasks)}\n\n"
-            "CONTEXT (read-only):\n" + ("\n".join(seg_line(s, diarized) for s in prev_tail) or "(start of meeting)")
-            + "\n\nCHUNK:\n" + "\n".join(seg_line(s, diarized) for s in chunk)
+            "CONTEXT (read-only):\n" + ("\n".join(seg_line(s, diarized, names) for s in prev_tail) or "(start of meeting)")
+            + "\n\nCHUNK:\n" + "\n".join(seg_line(s, diarized, names) for s in chunk)
         )
         out = llm.call_json(prompts.DOC_SYSTEM, user, DocChunkOut, max_tokens=4000)
 
@@ -227,18 +231,19 @@ def summarize(
     llm: LLMClient,
     settings: Settings,
     progress: Progress = lambda *a: None,
+    names: dict[str, str] | None = None,
 ) -> tuple[str, list[MinutesSection], list[str]]:
     warnings: list[str] = []
     valid = {s.id for s in segments}
     total_words = sum(len(s.text.split()) for s in segments)
     if total_words <= settings.summary_max_words:
-        body = "TRANSCRIPT:\n" + "\n".join(seg_line(s, diarized) for s in segments)
+        body = "TRANSCRIPT:\n" + "\n".join(seg_line(s, diarized, names) for s in segments)
     else:  # map-reduce for long meetings (stays under free-tier request size limits)
         notes = []
         chunks = chunk_by_words(segments, settings.doc_chunk_words * 3)
         for ci, chunk in enumerate(chunks, 1):
             progress(STAGE, f"LLM #2 extracting notes (chunk {ci}/{len(chunks)})", ci / len(chunks))
-            out = llm.call_json(prompts.NOTES_SYSTEM, "TRANSCRIPT:\n" + "\n".join(seg_line(s, diarized) for s in chunk), NotesOut)
+            out = llm.call_json(prompts.NOTES_SYSTEM, "TRANSCRIPT:\n" + "\n".join(seg_line(s, diarized, names) for s in chunk), NotesOut)
             notes.extend(out.notes)
         body = "NOTES (extracted from the transcript, in order):\n" + "\n".join(
             f"- {n.text} [{', '.join(i for i in n.segment_ids if i in valid)}]" for n in notes

@@ -10,7 +10,7 @@ from pathlib import Path
 from .config import Settings
 from .documentation import LifecycleResult
 from .refine import RefinementResult
-from .schemas import MeetingRecord, MinutesSection, ModelInfo, RefinedSegment, Transcript
+from .schemas import SpeakerIdentity, MeetingRecord, MinutesSection, ModelInfo, RefinedSegment, Transcript
 from .utils import fmt_ts
 from .verification import VerifiedOutputs
 
@@ -26,6 +26,7 @@ def build_record(
     minutes: list[MinutesSection],
     settings: Settings,
     warnings: list[str],
+    speakers: list[SpeakerIdentity] | None = None,
 ) -> MeetingRecord:
     snap = {k: (str(v) if isinstance(v, Path) else v) for k, v in asdict(settings).items()}
     for secret in ("groq_api_key", "hf_token"):
@@ -51,6 +52,7 @@ def build_record(
         rejected_proposals=verified.rejected,
         deferred_proposals=verified.deferred,
         unresolved_proposals=verified.unresolved,
+        speakers=speakers or [],
         raw_transcript=transcript,
         refined_transcript=refinement.refined_segments,
         glossary=refinement.glossary,
@@ -63,10 +65,11 @@ def build_record(
 
 
 # ---------------------------------------------------------------------------
-def transcript_text(segments, diarized: bool) -> str:
+def transcript_text(segments, diarized: bool, names: dict[str, str] | None = None) -> str:
+    """One line per segment; speakers shown by resolved name when known, else SPEAKER_xx."""
     lines = []
     for s in segments:
-        spk = f" {s.speaker}:" if diarized and s.speaker else ""
+        spk = f" {(names or {}).get(s.speaker, s.speaker)}:" if diarized and s.speaker else ""
         lines.append(f"[{fmt_ts(s.start)} - {fmt_ts(s.end)}] ({s.id}){spk} {s.text}")
     return "\n".join(lines) + "\n"
 
@@ -81,13 +84,27 @@ def _md_escape(s: str) -> str:
     return (s or "").replace("|", "\\|").replace("\n", " ")
 
 
+def _names(rec: MeetingRecord) -> dict[str, str]:
+    return {s.label: s.display_name for s in rec.speakers}
+
+
 def to_markdown(rec: MeetingRecord) -> str:
+    names = _names(rec)
     L: list[str] = []
     L.append(f"# Meeting record - {rec.source_file}")
     L.append("")
     L.append(f"_Generated {rec.created_at} · duration {fmt_ts(rec.duration_sec)} · "
              f"speakers {'diarized' if rec.diarized else 'not identified'}_")
     L.append("")
+    if rec.speakers:
+        L.append("## Speakers")
+        L.append("| Label | Name | Confidence | Evidence |")
+        L.append("|---|---|---|---|")
+        for sp in rec.speakers:
+            ev = "; ".join(f"{e.kind} {e.segment_id}: “{e.quote}”" for e in sp.evidence[:3]) or "-"
+            shown = sp.display_name if sp.name else "not mentioned"
+            L.append(f"| {sp.label} | {shown} | {sp.confidence} | {_md_escape(ev)} |")
+        L.append("")
     L.append("## Summary")
     L.append(rec.summary or "_No summary produced._")
     L.append("")
@@ -108,7 +125,7 @@ def to_markdown(rec: MeetingRecord) -> str:
         L.append("|---|---|---|---|")
         for d in rec.decisions:
             flags = f" ⚠ {'; '.join(d.flags)}" if d.flags else ""
-            L.append(f"| {d.id} | {_md_escape(d.decision)}{flags} | {d.proposed_by or 'unspecified'} | {_cite(d.provenance)} |")
+            L.append(f"| {d.id} | {_md_escape(d.decision)}{flags} | {names.get(d.proposed_by, d.proposed_by) if d.proposed_by else 'unspecified'} | {_cite(d.provenance)} |")
         for d in rec.decisions:
             for q in d.provenance.quotes:
                 L.append(f"> {d.id}: “{q}”")
@@ -120,7 +137,8 @@ def to_markdown(rec: MeetingRecord) -> str:
         L.append("| ID | Task | Owner | Deadline | Evidence |")
         L.append("|---|---|---|---|---|")
         for a in rec.action_items:
-            owner = a.owner + (" _(speaker label)_" if a.owner_source == "speaker_label" else "")
+            owner = a.owner + {"speaker_label": " _(speaker label)_",
+                               "speaker_name": " _(self-introduced speaker)_"}.get(a.owner_source, "")
             flags = f" ⚠ {'; '.join(a.flags)}" if a.flags else ""
             L.append(f"| {a.id} | {_md_escape(a.task)}{flags} | {owner} | {_md_escape(a.deadline)} | {_cite(a.provenance)} |")
         notes = [a for a in rec.action_items if a.owner_annotation]
@@ -170,8 +188,8 @@ def save_outputs(rec: MeetingRecord, out_dir: Path) -> dict[str, Path]:
     }
     files["record.json"].write_text(rec.model_dump_json(indent=2), encoding="utf-8")
     files["record.md"].write_text(to_markdown(rec), encoding="utf-8")
-    files["raw_transcript.txt"].write_text(transcript_text(rec.raw_transcript.segments, rec.diarized), encoding="utf-8")
-    files["refined_transcript.txt"].write_text(transcript_text(rec.refined_transcript, rec.diarized), encoding="utf-8")
+    files["raw_transcript.txt"].write_text(transcript_text(rec.raw_transcript.segments, rec.diarized, _names(rec)), encoding="utf-8")
+    files["refined_transcript.txt"].write_text(transcript_text(rec.refined_transcript, rec.diarized, _names(rec)), encoding="utf-8")
     return files
 
 
