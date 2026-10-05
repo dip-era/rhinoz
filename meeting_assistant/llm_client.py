@@ -98,6 +98,13 @@ class LLMClient:
             time.sleep(max(0.5, 60 - (now - self._window[0][0]) + 0.5))
         self._window.append((time.time(), tokens))
 
+    def _output_cap(self, prompt_est: int) -> int | None:
+        """Largest max_tokens that keeps prompt + max_tokens under the tokens/minute limit.
+        Groq rejects (413) any single request whose prompt + max_tokens exceeds that limit."""
+        if not self.tpm_limit:
+            return None
+        return self.tpm_limit - prompt_est - 300  # margin for tokenizer differences
+
     def _complete(self, messages: list[dict], max_tokens: int, temperature: float) -> str:
         key = hashlib.sha256(
             json.dumps([self.model, messages, max_tokens, temperature, self.extra], sort_keys=True).encode()
@@ -109,8 +116,16 @@ class LLMClient:
 
         import groq
 
-        est = int(sum(len(m["content"]) for m in messages) / 3.5) + min(max_tokens, 1500)
-        self._pace(est)
+        prompt_est = int(sum(len(m["content"]) for m in messages) / 3.2) + 50
+        cap = self._output_cap(prompt_est)
+        if cap is not None and cap < 512:
+            raise PipelineError(
+                f"{self.role}: the prompt alone (~{prompt_est} tokens) nearly fills the {self.tpm_limit} tokens/minute "
+                f"limit of '{self.model}' - lower the chunk size in config.py.",
+                stage=self.role,
+            )
+        max_tokens = min(max_tokens, cap) if cap is not None else max_tokens
+        self._pace(prompt_est + min(max_tokens, 1500))
         params = dict(
             model=self.model,
             messages=messages,
@@ -125,8 +140,9 @@ class LLMClient:
                 resp = self.client.chat.completions.create(**params)
                 choice = resp.choices[0]
                 content = choice.message.content or ""
-                if choice.finish_reason == "length" and params["max_tokens"] < 16384:
-                    params["max_tokens"] = min(16384, params["max_tokens"] * 2)
+                limit = min(16384, cap) if cap is not None else 16384
+                if choice.finish_reason == "length" and params["max_tokens"] < limit:
+                    params["max_tokens"] = min(limit, params["max_tokens"] * 2)
                     continue
                 break
             except groq.BadRequestError as e:
@@ -151,6 +167,15 @@ class LLMClient:
                 raise PipelineError(f"{self.role}: cannot reach the Groq API ({e}).", stage=self.role) from e
             except groq.APIStatusError as e:
                 if e.status_code == 413:
+                    # Groq counts prompt + max_tokens against the per-minute limit; shrink the output budget and retry.
+                    m = re.search(r"Limit (\d+), Requested (\d+)", str(e))
+                    if m and attempt < 3:
+                        over = int(m.group(2)) - int(m.group(1))
+                        new_max = params["max_tokens"] - over - 200
+                        if new_max >= 512:
+                            params["max_tokens"] = new_max
+                            cap = new_max
+                            continue
                     raise PipelineError(
                         f"{self.role}: request too large for '{self.model}' on the free tier - lower the chunk size in config.",
                         stage=self.role,

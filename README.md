@@ -28,10 +28,10 @@ The usual pipeline is Whisper → prompt → prompt → JSON. Ours doesn't trust
 
 | Stage | Model | Role |
 |---|---|---|
-| Speech-to-text | **faster-whisper `large-v3`** (CTranslate2, int8_float16) | VAD-filtered transcription with word timestamps and probabilities |
+| Speech-to-text | **faster-whisper `large-v3-turbo`** (CTranslate2, int8_float16; the only supported model) | VAD-filtered transcription with word timestamps and probabilities |
 | Diarization (optional) | **pyannote/speaker-diarization-3.1** | Speaker labels, used for self-commitment owners ("I'll do it") |
 | LLM #1 – refinement | **Groq `llama-3.3-70b-versatile`** | Proposes glossary terms and minimal structured edits. Never rewrites text. |
-| Acoustic verifier | **`openai/whisper-large-v3`** (HF transformers, same checkpoint as the ASR) | Teacher-forced log-likelihood of each segment with vs. without an edit |
+| Acoustic verifier | **`openai/whisper-large-v3-turbo`** (HF transformers, same checkpoint as the ASR) | Teacher-forced log-likelihood of each segment with vs. without an edit |
 | LLM #2 – documentation | **Groq `openai/gpt-oss-120b`** | Speech-act tagging, proposal/task lifecycle events, summary and minutes |
 | NLI flags (optional) | **cross-encoder/nli-deberta-v3-small** | Flags weakly supported decisions/tasks in the UI. Never deletes anything. |
 
@@ -95,13 +95,13 @@ Outputs are written to `outputs/<timestamp>_<name>/`: `record.json`, `record.md`
 | `documentation.py` | **Stage 3.** `extract_lifecycle`: one LLM-#2 call per chunk that tags speech acts and emits proposal/task events, with open state carried across chunks. Every event needs a verbatim quote from a segment in the current chunk. An acceptance must sit on an agreement/decision/commitment act and can't come from the proposer alone. `summarize`: summary + minutes with segment citations (map-reduce for long meetings). |
 | `verification.py` | **Stage 4.** Decisions = accepted proposals only. An owner must be found verbatim (fuzzy) in a cited segment, or be the speaker label of a first-person commitment; otherwise it's `unspecified`. Names inferred from context go only to `owner_annotation`. Deadlines are copied verbatim, never converted to dates. Optional DeBERTa-MNLI adds UI flags. |
 | `record.py` | Builds the canonical `MeetingRecord`, renders Markdown **from** it (empty lists render as "No decisions were reached"), writes transcript text files and saves all outputs. |
-| `pipeline.py` | `run_pipeline()`: Stage 0 → 1 → 2 → 3a → 4 → 3b → record, with a progress callback and sequential model loading. LLM clients are created before ASR so a missing key fails fast. |
+| `pipeline.py` | Stage functions the UI calls one at a time (`stage0_validate`, `stage1_transcribe`, `stage2_refine`, `stage3_document`, sharing a `PipelineSession`), plus `run_pipeline()` chaining them for the CLI/eval: Stage 0 → 1 → 2 → 3a → 4 → 3b → record, with a progress callback and sequential model loading. LLM clients are created before ASR so a missing key fails fast. |
 
 ### Top level
 
 | File | Purpose |
 |---|---|
-| `app.py` | Streamlit UI: upload, live processing status, clear errors; tabs for summary/minutes, decisions (**expand to play the audio clip** and see the lifecycle), action items (owner source, annotations, evidence clip), raw/refined/diff transcripts, the refinement log (every edit with ASR p, Δlogp, protected hits and verdict), and downloads. |
+| `app.py` | Step-by-step Streamlit UI: upload → automatic Stage 0 check (OK message or clear error) → button for Stage 1 (raw transcript shown) → button for Stage 2 (refined transcript, diff, edit log) → button for Stage 3 (summary/minutes, decisions, action items, downloads). Tabs for summary/minutes, decisions (**expand to play the audio clip** and see the lifecycle), action items (owner source, annotations, evidence clip), raw/refined/diff transcripts, the refinement log (every edit with ASR p, Δlogp, protected hits and verdict), and downloads. |
 | `run_cli.py` | The same pipeline from the command line, for evaluation and debugging. |
 
 ### `eval/` (evaluation, our main differentiator)

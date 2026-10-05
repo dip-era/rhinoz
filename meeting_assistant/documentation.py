@@ -119,7 +119,7 @@ def extract_lifecycle(
             "CONTEXT (read-only):\n" + ("\n".join(seg_line(s, diarized) for s in prev_tail) or "(start of meeting)")
             + "\n\nCHUNK:\n" + "\n".join(seg_line(s, diarized) for s in chunk)
         )
-        out = llm.call_json(prompts.DOC_SYSTEM, user, DocChunkOut, max_tokens=6000)
+        out = llm.call_json(prompts.DOC_SYSTEM, user, DocChunkOut, max_tokens=4000)
 
         def grounded(seg_id: str, quote: str, what: str) -> bool:
             if seg_id not in chunk_ids:
@@ -235,7 +235,7 @@ def summarize(
         body = "TRANSCRIPT:\n" + "\n".join(seg_line(s, diarized) for s in segments)
     else:  # map-reduce for long meetings (stays under free-tier request size limits)
         notes = []
-        chunks = chunk_by_words(segments, settings.doc_chunk_words * 2)
+        chunks = chunk_by_words(segments, settings.doc_chunk_words * 3)
         for ci, chunk in enumerate(chunks, 1):
             progress(STAGE, f"LLM #2 extracting notes (chunk {ci}/{len(chunks)})", ci / len(chunks))
             out = llm.call_json(prompts.NOTES_SYSTEM, "TRANSCRIPT:\n" + "\n".join(seg_line(s, diarized) for s in chunk), NotesOut)
@@ -254,7 +254,7 @@ def summarize(
         + "\n\nPROPOSALS NOT ADOPTED:\n" + fmt_list(not_adopted, lambda p: f"- {p.id} ({p.status}): {p.proposal}")
     )
     progress(STAGE, "LLM #2 writing summary and minutes", None)
-    out = llm.call_json(prompts.SUMMARY_SYSTEM, lists + "\n\n" + body, SummaryOut, max_tokens=4000)
+    out = llm.call_json(prompts.SUMMARY_SYSTEM, lists + "\n\n" + body, SummaryOut, max_tokens=3000)
     sections = []
     for sec in out.minutes:
         pts = []

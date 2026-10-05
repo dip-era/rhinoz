@@ -1,5 +1,9 @@
-"""Streamlit UI: upload -> process (live status) -> inspect transcripts, diff, decisions
-(with playable evidence clips), action items -> download.
+"""Streamlit UI - step-by-step:
+
+    upload  -> Stage 0 validation runs automatically (OK message or clear error)
+    button  -> Stage 1: raw transcript            (shown + downloadable)
+    button  -> Stage 2: refined transcript        (diff, edit log, downloadable)
+    button  -> Stage 3: summary, minutes, decisions, action items (+ all downloads)
 
 Run:  streamlit run app.py
 """
@@ -10,22 +14,18 @@ import difflib
 import html
 import traceback
 from pathlib import Path
+from typing import Callable
 
 import streamlit as st
 
-from meeting_assistant.audio_io import clip_wav_bytes, read_wav
-from meeting_assistant.config import ASR_TO_HF, Settings
+from meeting_assistant.audio_io import clip_wav_bytes
+from meeting_assistant.config import ASR_MODEL, Settings
 from meeting_assistant.errors import PipelineError
-from meeting_assistant.pipeline import run_pipeline
+from meeting_assistant.pipeline import stage0_validate, stage1_transcribe, stage2_refine, stage3_document
 from meeting_assistant.record import to_markdown, transcript_text
 from meeting_assistant.utils import fmt_ts
 
 st.set_page_config(page_title="Evidence-Traced Meeting Assistant", layout="wide")
-
-
-@st.cache_data(show_spinner=False)
-def _load_audio(path: str):
-    return read_wav(path)
 
 
 def _diff_html(raw: str, refined: str) -> str:
@@ -42,41 +42,9 @@ def _diff_html(raw: str, refined: str) -> str:
     return " ".join(out)
 
 
-# ---------------------------------------------------------------------------
-# Sidebar
-# ---------------------------------------------------------------------------
-base = Settings.from_env()
-with st.sidebar:
-    st.header("Settings")
-    asr_models = list(ASR_TO_HF)
-    asr_model = st.selectbox("Whisper model", asr_models, index=asr_models.index(base.asr_model) if base.asr_model in asr_models else 0)
-    diarize = st.checkbox("Speaker diarization (pyannote, needs HF_TOKEN)", value=base.diarize)
-    acoustic = st.checkbox("Acoustic verification of edits", value=base.acoustic_check)
-    nli = st.checkbox("NLI support flags (DeBERTa)", value=base.nli_check)
-    st.caption(f"LLM #1 (refinement): `{base.llm1_model}`")
-    st.caption(f"LLM #2 (documentation): `{base.llm2_model}`")
-    if not base.groq_api_key:
-        st.error("GROQ_API_KEY is not set - add it to .env")
-    st.divider()
-    glossary_text = st.text_area("Agenda / domain terms (optional)", placeholder="Kubernetes, Grafana, PostgreSQL ...", height=110)
-    attendees_text = st.text_area("Attendee names (optional)", placeholder="Priya, Rahul, Ankit", height=70)
-
-settings = dataclasses.replace(base, asr_model=asr_model, diarize=diarize, acoustic_check=acoustic, nli_check=nli)
-
-# ---------------------------------------------------------------------------
-# Upload + run
-# ---------------------------------------------------------------------------
-st.title("Evidence-Traced Meeting Assistant")
-st.caption("Every word in the output is traceable back to the audio.")
-
-uploaded = st.file_uploader("Upload a meeting recording (English)", type=None)
-if st.button("Process recording", type="primary", disabled=uploaded is None):
-    upload_dir = settings.output_dir / "uploads"
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    path = upload_dir / Path(uploaded.name).name
-    path.write_bytes(uploaded.getvalue())
-    st.session_state.pop("result", None)
-    with st.status("Processing...", expanded=True) as status:
+def _run_stage(label: str, fn: Callable[[Callable], object]) -> bool:
+    """Run one stage inside a live status box; show a clear error on failure."""
+    with st.status(f"{label}...", expanded=True) as status:
         bar = st.progress(0.0)
 
         def cb(stage: str, msg: str, frac: float | None = None):
@@ -86,34 +54,172 @@ if st.button("Process recording", type="primary", disabled=uploaded is None):
                 bar.progress(min(max(frac, 0.0), 1.0))
 
         try:
-            res = run_pipeline(path, glossary_text, attendees_text, settings, cb)
-            st.session_state["result"] = res
-            status.update(label="Done", state="complete", expanded=False)
+            fn(cb)
+            status.update(label=f"{label} - done", state="complete", expanded=False)
+            return True
         except PipelineError as e:
-            status.update(label=f"Failed at {e.stage}", state="error")
+            status.update(label=f"{label} - failed", state="error")
             st.error(f"**{e.stage}:** {e}")
         except Exception as e:
-            status.update(label="Failed (unexpected error)", state="error")
+            status.update(label=f"{label} - failed (unexpected error)", state="error")
             st.error(f"Unexpected error: {type(e).__name__}: {e}")
             with st.expander("Traceback"):
                 st.code(traceback.format_exc())
+    return False
 
-res = st.session_state.get("result")
-if not res:
+
+# ---------------------------------------------------------------------------
+# Sidebar
+# ---------------------------------------------------------------------------
+base = Settings.from_env()
+with st.sidebar:
+    st.header("Settings")
+    st.caption(f"Whisper model: `{ASR_MODEL}`")
+    diarize = st.checkbox("Speaker diarization (pyannote, needs HF_TOKEN)", value=base.diarize)
+    acoustic = st.checkbox("Acoustic verification of edits", value=base.acoustic_check)
+    nli = st.checkbox("NLI support flags (DeBERTa)", value=base.nli_check)
+    st.caption(f"LLM #1 (refinement): `{base.llm1_model}`")
+    st.caption(f"LLM #2 (documentation): `{base.llm2_model}`")
+    if not base.groq_api_key:
+        st.error("GROQ_API_KEY is not set - Stages 2 and 3 need it (add it to .env)")
+    st.divider()
+    glossary_text = st.text_area("Agenda / domain terms (optional, used from Stage 1)",
+                                 placeholder="Kubernetes, Grafana, PostgreSQL ...", height=110)
+    attendees_text = st.text_area("Attendee names (optional, used from Stage 1)",
+                                  placeholder="Priya, Rahul, Ankit", height=70)
+
+settings = dataclasses.replace(base, diarize=diarize, acoustic_check=acoustic, nli_check=nli)
+
+st.title("Evidence-Traced Meeting Assistant")
+st.caption("Every word in the output is traceable back to the audio.")
+
+# ---------------------------------------------------------------------------
+# Stage 0 - upload + automatic validation
+# ---------------------------------------------------------------------------
+uploaded = st.file_uploader("Upload a meeting recording (English)", type=None)
+if uploaded is None:
+    for k in ("sess", "upload_id", "upload_error"):
+        st.session_state.pop(k, None)
     st.stop()
 
-rec = res.record
-audio = _load_audio(str(res.audio_wav))
-segmap = {s.id: s for s in rec.refined_transcript}
+upload_id = f"{uploaded.name}:{uploaded.size}"
+if st.session_state.get("upload_id") != upload_id:  # new file -> validate it once
+    st.session_state["upload_id"] = upload_id
+    st.session_state.pop("sess", None)
+    st.session_state.pop("upload_error", None)
+    upload_dir = settings.output_dir / "uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    path = upload_dir / Path(uploaded.name).name
+    path.write_bytes(uploaded.getvalue())
+    try:
+        with st.spinner("Stage 0: checking the file..."):
+            st.session_state["sess"] = stage0_validate(path, settings, lambda *a: None)
+    except PipelineError as e:
+        st.session_state["upload_error"] = str(e)
+    except Exception as e:
+        st.session_state["upload_error"] = f"The file could not be processed ({type(e).__name__}: {e})."
+
+if "upload_error" in st.session_state:
+    st.error(f"**Stage 0 - file rejected:** {st.session_state['upload_error']}")
+    st.stop()
+
+sess = st.session_state["sess"]
+sess.settings = settings  # apply the current sidebar options to the next stage that runs
+m = sess.meta
+st.success(
+    f"**Stage 0 - file OK:** `{m['file']}` · {m['format'].upper()} · {fmt_ts(m['duration_sec'])} of audio "
+    f"({m.get('codec')}, {m.get('source_sample_rate')} Hz). Ready for transcription."
+)
+st.audio(str(sess.audio_wav))
+
+# ---------------------------------------------------------------------------
+# Stage 1 - raw transcript
+# ---------------------------------------------------------------------------
+st.header("Stage 1 · Raw transcript")
+if st.button("Generate raw transcript", type="primary" if sess.transcript is None else "secondary"):
+    _run_stage("Stage 1: transcribing", lambda cb: stage1_transcribe(sess, glossary_text, attendees_text, cb))
+
+if sess.transcript is None:
+    st.stop()
+tr = sess.transcript
+raw_txt = transcript_text(tr.segments, tr.diarized)
+st.caption(f"{len(tr.segments)} segments · {len(tr.words)} words · speakers "
+           f"{'diarized' if tr.diarized else 'not identified'} · model `{tr.asr_model}`")
+st.text_area("Raw transcript (speech-to-text output, before any LLM)", raw_txt, height=300)
+st.download_button("Download raw transcript (.txt)", raw_txt, "raw_transcript.txt")
+
+# ---------------------------------------------------------------------------
+# Stage 2 - refined transcript
+# ---------------------------------------------------------------------------
+st.header("Stage 2 · Refined transcript")
+if st.button("Generate refined transcript", type="primary" if sess.refinement is None else "secondary"):
+    _run_stage("Stage 2: refining terminology", lambda cb: stage2_refine(sess, cb))
+
+if sess.refinement is None:
+    st.stop()
+ref = sess.refinement
+refined_txt = transcript_text(ref.refined_segments, tr.diarized)
+n_acc = sum(v.accepted for v in ref.verdicts)
+st.caption(f"{n_acc} of {len(ref.verdicts)} proposed edits accepted · {len(ref.candidates)} candidate spans · "
+           f"acoustic verifier: {ref.acoustic_model if ref.acoustic_used else 'not used'}")
+for w in ref.warnings:
+    st.warning(w)
+
+t_diff, t_side, t_ref, t_log = st.tabs(["Changes", "Side by side", "Refined transcript", "Refinement log"])
+with t_diff:
+    changed = [s for s in ref.refined_segments if s.edit_ids]
+    if not changed:
+        st.info("No edits were accepted - the refined transcript equals the raw transcript.")
+    for s in changed:
+        st.markdown(f"`{s.id}` [{fmt_ts(s.start)}] " + _diff_html(s.raw_text, s.text), unsafe_allow_html=True)
+with t_side:
+    c1, c2 = st.columns(2)
+    c1.markdown("**Raw (ASR)**")
+    c2.markdown("**Refined**")
+    for s in ref.refined_segments:
+        spk = f"{s.speaker}: " if s.speaker else ""
+        c1.markdown(f"`{s.id}` {spk}{html.escape(s.raw_text)}", unsafe_allow_html=True)
+        c2.markdown(f"`{s.id}` {spk}" + _diff_html(s.raw_text, s.text), unsafe_allow_html=True)
+with t_ref:
+    st.text_area("Refined transcript", refined_txt, height=300)
+with t_log:
+    st.caption(f"Glossary: {', '.join(g.term for g in ref.glossary) or '(empty)'}")
+    rows = [
+        {
+            "id": e.edit_id, "seg": e.segment_id, "accepted": e.accepted, "original": e.located_text or e.original,
+            "replacement": e.replacement, "type": e.edit_type, "evidence": ", ".join(e.sources),
+            "ASR p": None if e.mean_prob is None else round(e.mean_prob, 2),
+            "Δlogp": None if e.acoustic_delta is None else round(e.acoustic_delta, 2),
+            "protected": ", ".join(e.protected_hits), "LLM conf": e.confidence,
+            "verdict": e.verdict_reason, "LLM reason": e.reason,
+        }
+        for e in ref.verdicts
+    ]
+    if rows:
+        st.dataframe(rows, use_container_width=True, hide_index=True)
+    else:
+        st.info("LLM #1 proposed no edits.")
+st.download_button("Download refined transcript (.txt)", refined_txt, "refined_transcript.txt")
+
+# ---------------------------------------------------------------------------
+# Stage 3 - minutes, decisions, action items
+# ---------------------------------------------------------------------------
+st.header("Stage 3 · Summary, minutes, decisions and action items")
+if st.button("Generate meeting record", type="primary" if sess.record is None else "secondary"):
+    _run_stage("Stage 3: documenting the meeting", lambda cb: stage3_document(sess, cb))
+
+rec = sess.record
+if rec is None:
+    st.stop()
+audio = sess.audio
 
 if rec.warnings:
     with st.expander(f"⚠ {len(rec.warnings)} pipeline warnings"):
         for w in rec.warnings:
             st.write("- " + w)
 
-tabs = st.tabs(["Summary & minutes", "Decisions", "Action items", "Transcripts", "Refinement log", "Downloads"])
-
-with tabs[0]:
+t_sum, t_dec, t_act, t_dl = st.tabs(["Summary & minutes", "Decisions", "Action items", "Downloads"])
+with t_sum:
     st.subheader("Summary")
     st.write(rec.summary or "_No summary._")
     st.subheader("Minutes")
@@ -128,7 +234,7 @@ with tabs[0]:
         for p in not_adopted:
             st.markdown(f"- **{p.status}** - {p.proposal} ({', '.join(p.provenance.segment_ids)})")
 
-with tabs[1]:
+with t_dec:
     if not rec.decisions:
         st.info("No decisions were reached (an empty list is a valid result).")
     for d in rec.decisions:
@@ -141,7 +247,7 @@ with tabs[1]:
                 spk = f" ({e.speaker})" if e.speaker else ""
                 st.markdown(f"- `{e.status}` at {e.segment_id} [{fmt_ts(e.start)}]{spk}: “{e.quote}”")
 
-with tabs[2]:
+with t_act:
     if not rec.action_items:
         st.info("No action items were assigned.")
     for a in rec.action_items:
@@ -161,51 +267,9 @@ with tabs[2]:
         for r in rec.unconfirmed_requests:
             st.markdown(f"- {r.id}: {r.task} ({', '.join(r.provenance.segment_ids)})")
 
-with tabs[3]:
-    view = st.radio("View", ["Diff (changed segments)", "Side by side", "Raw", "Refined"], horizontal=True)
-    if view.startswith("Diff"):
-        changed = [s for s in rec.refined_transcript if s.edit_ids]
-        if not changed:
-            st.info("No edits were accepted - refined transcript equals the raw transcript.")
-        for s in changed:
-            st.markdown(f"`{s.id}` [{fmt_ts(s.start)}] " + _diff_html(s.raw_text, s.text), unsafe_allow_html=True)
-    elif view == "Side by side":
-        c1, c2 = st.columns(2)
-        c1.markdown("**Raw (ASR)**")
-        c2.markdown("**Refined**")
-        for s in rec.refined_transcript:
-            spk = f"{s.speaker}: " if s.speaker else ""
-            c1.markdown(f"`{s.id}` {spk}{s.raw_text}")
-            c2.markdown(f"`{s.id}` {spk}" + _diff_html(s.raw_text, s.text), unsafe_allow_html=True)
-    elif view == "Raw":
-        st.text(transcript_text(rec.raw_transcript.segments, rec.diarized))
-    else:
-        st.text(transcript_text(rec.refined_transcript, rec.diarized))
-
-with tabs[4]:
-    st.caption(
-        f"Glossary: {', '.join(g.term for g in rec.glossary) or '(empty)'}  ·  "
-        f"{len(rec.candidates)} candidate spans  ·  acoustic verifier: {rec.models.acoustic_verifier or 'not used'}"
-    )
-    rows = [
-        {
-            "id": e.edit_id, "seg": e.segment_id, "accepted": e.accepted, "original": e.located_text or e.original,
-            "replacement": e.replacement, "type": e.edit_type, "evidence": ", ".join(e.sources),
-            "ASR p": None if e.mean_prob is None else round(e.mean_prob, 2),
-            "Δlogp": None if e.acoustic_delta is None else round(e.acoustic_delta, 2),
-            "protected": ", ".join(e.protected_hits), "LLM conf": e.confidence,
-            "verdict": e.verdict_reason, "LLM reason": e.reason,
-        }
-        for e in rec.edits
-    ]
-    if rows:
-        st.dataframe(rows, use_container_width=True, hide_index=True)
-    else:
-        st.info("LLM #1 proposed no edits.")
-
-with tabs[5]:
+with t_dl:
     st.download_button("Meeting record (JSON)", rec.model_dump_json(indent=2), "record.json", "application/json")
     st.download_button("Meeting record (Markdown)", to_markdown(rec), "record.md", "text/markdown")
-    st.download_button("Raw transcript (.txt)", transcript_text(rec.raw_transcript.segments, rec.diarized), "raw_transcript.txt")
-    st.download_button("Refined transcript (.txt)", transcript_text(rec.refined_transcript, rec.diarized), "refined_transcript.txt")
-    st.caption(f"Also saved to `{res.output_dir}`")
+    st.download_button("Raw transcript (.txt)", raw_txt, "raw_transcript.txt", key="dl_raw_final")
+    st.download_button("Refined transcript (.txt)", refined_txt, "refined_transcript.txt", key="dl_ref_final")
+    st.caption(f"Also saved to `{sess.output_dir}`")

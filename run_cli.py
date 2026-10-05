@@ -18,7 +18,6 @@ def main() -> int:
     ap.add_argument("audio", type=Path)
     ap.add_argument("--glossary", default="", help="comma/newline separated terms, or @file.txt")
     ap.add_argument("--attendees", default="", help="comma separated names, or @file.txt")
-    ap.add_argument("--asr-model", default=None)
     ap.add_argument("--diarize", action="store_true")
     ap.add_argument("--no-acoustic", action="store_true", help="disable teacher-forced acoustic verification")
     ap.add_argument("--nli", action="store_true")
@@ -29,8 +28,6 @@ def main() -> int:
         return Path(v[1:]).read_text(encoding="utf-8") if v.startswith("@") else v
 
     s = Settings.from_env()
-    if args.asr_model:
-        s.asr_model = args.asr_model
     if args.diarize:
         s.diarize = True
     if args.no_acoustic:

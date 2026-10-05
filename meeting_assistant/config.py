@@ -14,19 +14,10 @@ except ImportError:  # python-dotenv is optional
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# faster-whisper (CTranslate2) model name -> the same checkpoint in HF transformers.
+# The only supported ASR model, and the same checkpoint in HF transformers.
 # The acoustic verifier must score with the same weights the ASR used.
-ASR_TO_HF = {
-    "large-v3": "openai/whisper-large-v3",
-    "large-v3-turbo": "openai/whisper-large-v3-turbo",
-    "turbo": "openai/whisper-large-v3-turbo",
-    "distil-large-v3": "distil-whisper/distil-large-v3",
-    "medium": "openai/whisper-medium",
-    "medium.en": "openai/whisper-medium.en",
-    "small": "openai/whisper-small",
-    "small.en": "openai/whisper-small.en",
-    "base.en": "openai/whisper-base.en",
-}
+ASR_MODEL = "large-v3-turbo"
+ASR_TO_HF = {ASR_MODEL: "openai/whisper-large-v3-turbo"}
 
 
 def _env(name: str, default):
@@ -51,7 +42,7 @@ def _env_num(name: str, default, cast=float):
 @dataclass
 class Settings:
     # ---- Stage 1: ASR -------------------------------------------------------
-    asr_model: str = "large-v3"
+    asr_model: str = ASR_MODEL  # fixed: large-v3-turbo only
     asr_device: str = "auto"  # auto | cuda | cpu
     asr_compute_type: str = "int8_float16"  # used on CUDA; CPU always uses int8
     asr_beam_size: int = 5
@@ -86,8 +77,8 @@ class Settings:
     no_acoustic_min_llm_conf: float = 0.75  # fallback rule when acoustic check is unavailable
 
     # ---- Stage 3: documentation --------------------------------------------
-    doc_chunk_words: int = 1000
-    summary_max_words: int = 3500  # above this, summary uses map-reduce notes
+    doc_chunk_words: int = 600  # keeps prompt + output under gpt-oss-120b's 8k tokens/minute free-tier limit
+    summary_max_words: int = 1800  # above this, summary uses map-reduce notes
 
     # ---- Stage 4: verification ---------------------------------------------
     quote_match_threshold: float = 85.0  # rapidfuzz partial_ratio for quotes/owners/deadlines
@@ -102,7 +93,6 @@ class Settings:
     @classmethod
     def from_env(cls) -> "Settings":
         s = cls()
-        s.asr_model = _env("ASR_MODEL", s.asr_model)
         s.asr_device = _env("ASR_DEVICE", s.asr_device)
         s.asr_compute_type = _env("ASR_COMPUTE_TYPE", s.asr_compute_type)
         s.asr_beam_size = _env_num("ASR_BEAM_SIZE", s.asr_beam_size, int)
