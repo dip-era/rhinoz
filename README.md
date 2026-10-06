@@ -134,17 +134,6 @@ Outputs are written to `outputs/<timestamp>_<name>/`: `record.json`, `record.md`
 6. **Owner/deadline text is copied from the transcript** (`find_verbatim`), never from the LLM's wording.
 7. **One canonical JSON**, with Markdown rendered from it, so both formats always contain the same decisions and tasks.
 
-## Evaluation results
-
-> **TBD.** Fill this in by running `python -m eval.run_eval` (and `--no-acoustic` for the ablation) on your **human** recordings. The numbers below are placeholders, not results.
-
-| Recording | WER raw | WER refined | Term err raw | Term err refined | Protected violations | Decision P | Decision R | Proposal leaks | Invented owners | Invented deadlines |
-|---|---|---|---|---|---|---|---|---|---|---|
-| meeting1_platform_sync | – | – | – | – | – | – | – | – | – | – |
-| meeting2_ml_sync | – | – | – | – | – | – | – | – | – | – |
-
-To record: `python -m eval.make_synthetic_audio eval/answer_keys/meeting1_platform_sync.json --print-script`, read it with 3 people, save it as the `audio` path in the key, then run the eval. Targets: protected violations = 0 and invented owners/deadlines = 0.
-
 ## Known limitations
 
 * **Without diarization**, an owner from "I'll do it" is `unspecified` (with an annotation). Speaker labels are `SPEAKER_00`-style, not names. A name heard in context is shown only as an annotation.
