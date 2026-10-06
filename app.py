@@ -75,9 +75,9 @@ base = Settings.from_env()
 with st.sidebar:
     st.header("Settings")
     st.caption(f"Whisper model: `{ASR_MODEL}`")
-    diarize = st.checkbox("Speaker diarization (pyannote, needs HF_TOKEN)", value=base.diarize)
+    diarize = st.checkbox("Speaker diarization", value=base.diarize)
     acoustic = st.checkbox("Acoustic verification of edits", value=base.acoustic_check)
-    nli = st.checkbox("NLI support flags (DeBERTa)", value=base.nli_check)
+    nli = st.checkbox("NLI support flags", value=base.nli_check)
     st.caption(f"LLM #1 (refinement): `{base.llm1_model}`")
     st.caption(f"LLM #2 (documentation): `{base.llm2_model}`")
     if not base.groq_api_key:
