@@ -1,9 +1,0 @@
-.env
-.venv/
-venv/
-__pycache__/
-.cache/
-outputs/
-eval/results/
-eval/recordings/*.wav
-!eval/recordings/.gitkeep
