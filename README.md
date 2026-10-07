@@ -4,6 +4,7 @@ Turns a recorded meeting into a raw transcript, a refined transcript and a struc
 
 **Core idea: every word in the output is traceable back to the audio.** The language models never write the record directly. They propose structured claims with citations (segment ids and verbatim quotes), and deterministic code checks each claim against the transcript and the audio before it is kept. Owners and deadlines are reported only when they were actually said; otherwise they are `unspecified`.
 
+Demo link : https://drive.google.com/file/d/1ygwfLt2ejny0b471PVv59Mmer2A-F9Gj/view?usp=sharing
 ---
 
 ## 1. Installation and running
