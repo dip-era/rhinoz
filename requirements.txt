@@ -1,0 +1,13 @@
+# Python 3.11 recommended (3.14 lacks wheels for parts of this stack).
+# Install PyTorch with CUDA FIRST, e.g.:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu124
+faster-whisper>=1.1.0      # ASR (CTranslate2) + PyAV for decoding (no system ffmpeg needed)
+transformers>=4.44         # acoustic verifier (Whisper teacher-forced scoring), NLI
+groq>=0.11                 # LLM #1 and LLM #2
+pydantic>=2.6
+rapidfuzz>=3.6
+Metaphone>=0.6             # Double Metaphone
+numpy
+streamlit>=1.36
+python-dotenv>=1.0
+pytest
