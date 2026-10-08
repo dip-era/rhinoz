@@ -4,7 +4,87 @@ Turns a recorded meeting into a raw transcript, a refined transcript and a struc
 
 **Core idea: every word in the output is traceable back to the audio.** The language models never write the record directly. They propose structured claims with citations (segment ids and verbatim quotes), and deterministic code checks each claim against the transcript and the audio before it is kept. Owners and deadlines are reported only when they were actually said; otherwise they are `unspecified`.
 
-Demo link : https://drive.google.com/file/d/1ygwfLt2ejny0b471PVv59Mmer2A-F9Gj/view?usp=sharing
+Demo link : https://drive.google.com/file/d/1ygwfLt2ejny0b471PVv59Mmer2A-F9Gj/view?usp=sharing<br>
+Output sample link : https://drive.google.com/drive/folders/1GkqZIIZqi2Pl7qzR85NeKeMhIrDjjzdS
+---
+## Pipeline Architecture
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "lineColor": "#F2A541",
+  "textColor": "#FFFFFF",
+  "titleColor": "#FFFFFF",
+  "clusterBkg": "#0F2A2E",
+  "clusterBorder": "#2F7F78",
+  "edgeLabelBackground": "#0F2A2E",
+  "fontFamily": "Arial"
+}}}%%
+flowchart LR
+    classDef box fill:#000000,stroke:#8FB8B2,stroke-width:2px,color:#FFFFFF,font-weight:bold
+    classDef llm fill:#000000,stroke:#F2A541,stroke-width:3px,color:#FFFFFF,font-weight:bold
+    classDef opt fill:#000000,stroke:#8FB8B2,stroke-width:2px,stroke-dasharray:5 4,color:#FFFFFF,font-weight:bold
+    classDef io fill:#000000,stroke:#F2A541,stroke-width:4px,color:#FFFFFF,font-weight:bold
+    classDef data fill:#0F2A2E,stroke:#F2A541,stroke-width:2px,color:#FFFFFF,font-weight:bold
+
+    subgraph S0["Stage 0 · Validate"]
+        direction TB
+        U(["Upload<br/>meeting audio"]):::io
+        V["Validate + decode<br/>(PyAV)"]:::box
+        W["16 kHz mono WAV"]:::box
+        U --> V --> W
+    end
+
+    subgraph S1["Stage 1 · Transcribe"]
+        direction TB
+        ASR["faster-whisper<br/>large-v3-turbo<br/>VAD, word timestamps<br/>+ confidences"]:::box
+        DIA["pyannote diarization<br/>word-level speakers<br/>+ voice re-check"]:::opt
+        NAME["Speaker naming<br/>only from what is<br/>said in the meeting"]:::opt
+        ASR --> DIA --> NAME
+    end
+
+    subgraph S2["Stage 2 · Refine"]
+        direction TB
+        GLO["Glossary<br/>terms, names,<br/>spelled-out words"]:::box
+        CAND["Candidate spans<br/>low confidence ∪<br/>sound-alike match"]:::box
+        L1["LLM #1 · gpt-oss-20b<br/>proposes minimal edits"]:::llm
+        CHK["Deterministic checks<br/>protected words"]:::box
+        SUP["LLM #3 · Qwen3<br/>supervisor approves / rejects"]:::llm
+        AC["Acoustic check<br/>audio with vs. without<br/>edit → apply"]:::box
+        GLO --> CAND --> L1 --> CHK --> SUP --> AC
+    end
+
+    subgraph S3["Stage 3 · Document + Verify"]
+        direction TB
+        L2["LLM #2 · gpt-oss-120b<br/>speech acts → decision /<br/>proposal / task events"]:::llm
+        CARRY["Carry open items<br/>across chunks<br/>+ consistency pass"]:::box
+        VER["Verification<br/>owners, deadlines, numbers<br/>in the cited lines"]:::box
+        SUM["LLM #2<br/>summary + minutes"]:::llm
+        L2 --> CARRY --> VER --> SUM
+    end
+
+    subgraph OUT["Outputs"]
+        direction TB
+        JSON[("record.json<br/>canonical")]:::io
+        MD["record.md<br/>rendered from JSON"]:::io
+        TR["raw + refined<br/>transcripts"]:::io
+        JSON --> MD
+        JSON --> TR
+    end
+
+    RAW(["raw transcript"]):::data
+    REF(["refined transcript"]):::data
+
+    S0 --> S1
+    S1 --> RAW --> S2
+    S2 --> REF --> S3
+    S3 --> OUT
+
+    style S0 fill:#0F2A2E,stroke:#2F7F78,stroke-width:2px,color:#FFFFFF
+    style S1 fill:#0F2A2E,stroke:#2F7F78,stroke-width:2px,color:#FFFFFF
+    style S2 fill:#0F2A2E,stroke:#2F7F78,stroke-width:2px,color:#FFFFFF
+    style S3 fill:#0F2A2E,stroke:#2F7F78,stroke-width:2px,color:#FFFFFF
+    style OUT fill:#0F2A2E,stroke:#2F7F78,stroke-width:2px,color:#FFFFFF
+    linkStyle default stroke:#F2A541,stroke-width:2.5px
+```
 ---
 
 ## 1. Installation and running
@@ -14,7 +94,7 @@ Demo link : https://drive.google.com/file/d/1ygwfLt2ejny0b471PVv59Mmer2A-F9Gj/vi
 | What | Notes |
 |---|---|
 | **Python 3.11** | Tested with 3.11.9. Python 3.13/3.14 lack wheels for parts of the stack (torch, ctranslate2, pyannote). |
-| **NVIDIA GPU + CUDA 12 driver** (recommended) | Tested on an RTX 3050 with 6 GB VRAM. Everything also runs on CPU, just much slower. |
+| **NVIDIA GPU + CUDA 12 driver** (recommended) | Tested on an RTX 3050 with 6 GB VRAM. Everything also runs on CPU(just slower) except diarization. |
 | **Groq API key** (required) | Free at [console.groq.com](https://console.groq.com). Used by the three language models. |
 | **Hugging Face token** (only for speaker diarization) | Create one at huggingface.co → Settings → Access Tokens, then open the model pages [pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1) and [pyannote/segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0) and accept their user conditions. |
 | ffmpeg | **Not needed.** Audio is decoded with PyAV, which is installed with faster-whisper. |
@@ -90,8 +170,6 @@ All settings, with defaults, are listed in [section 6](#6-configuration-referenc
 |---|---|
 | **Web interface** | `streamlit run app.py` then open http://localhost:8501 |
 | Command line (whole pipeline in one go) | `python run_cli.py path\to\meeting.wav --diarize --glossary "term1, term2" --attendees "Name1, Name2"` |
-| Offline tests (no GPU, no API key needed) | `python -m pytest tests -q` |
-| Evaluation on recordings with answer keys | `python -m eval.run_eval` |
 
 **Using the web interface**
 1. Optional: in the sidebar, tick *Speaker diarization*, *Acoustic verification* and/or *NLI support flags*, and type agenda terms and attendee names.
@@ -129,13 +207,13 @@ upload ─► Stage 0  validate + decode (PyAV) ─► 16 kHz mono WAV
 | Role | Model | Where it runs |
 |---|---|---|
 | Speech-to-text | faster-whisper `large-v3-turbo` | local GPU/CPU |
-| Speaker diarization | `pyannote/speaker-diarization-3.1` | local GPU/CPU |
-| Voice re-check | `pyannote/wespeaker-voxceleb-resnet34-LM` (speaker embeddings) | local GPU/CPU |
+| Speaker diarization | `pyannote/speaker-diarization-3.1` | local GPU only |
+| Voice re-check | `pyannote/wespeaker-voxceleb-resnet34-LM` (speaker embeddings) | local GPU only |
 | LLM #1 – refinement | `openai/gpt-oss-20b` | Groq API |
 | LLM #3 – refinement supervisor | `qwen/qwen3.8-27b` | Groq API |
 | Acoustic verifier | `openai/whisper-large-v3-turbo` (same checkpoint as the ASR) | local GPU/CPU |
 | LLM #2 – documentation and speaker naming | `openai/gpt-oss-120b` | Groq API |
-| NLI flags (optional) | `cross-encoder/nli-deberta-v3-small` | local CPU |
+| NLI flags (optional) | `cross-encoder/nli-deberta-v3-small` | local CPU/GPU |
 
 Models are loaded one at a time and freed before the next one, so the pipeline fits in 6 GB of VRAM. All model names can be changed in `.env`.
 
@@ -180,43 +258,6 @@ Models are loaded one at a time and freed before the next one, so the pipeline f
 | `record.py` | Builds the canonical `MeetingRecord` (JSON), renders the Markdown report from it, formats transcripts as one paragraph per speaker turn (with segment-id ranges for traceability), and saves all output files. |
 | `pipeline.py` | Runs the stages: `stage0_validate`, `stage1_transcribe`, `stage2_refine`, `stage3_document` (used one by one by the interface) and `run_pipeline` (all at once, used by the CLI and evaluation). |
 
-### 3.3 `eval/` – evaluation
-
-| File | What it does |
-|---|---|
-| `__init__.py` | Package marker. |
-| `answer_keys/*.json` | Two scripted meetings (speaker turns = reference transcript) with answer keys: terms to score, decisions, proposals that are *not* decisions, and action items with owner/deadline or `null`. They cover jargon, rejected proposals, tasks with no owner, numbers and negations. |
-| `recordings/.gitkeep` | Keeps the folder where recordings of the scripted meetings go (`eval/recordings/<name>.wav`). |
-| `make_synthetic_audio.py` | `--print-script` prints a meeting script for people to read aloud; without it, renders a text-to-speech WAV (smoke test only). |
-| `metrics.py` | Word error rate, error rate on domain terms, protected-word violations (numbers/negations made wrong by refinement), decision precision/recall and proposals wrongly reported as decisions, action-item precision/recall and invented owners/deadlines. |
-| `run_eval.py` | Runs the pipeline on every recording that has an answer key (or scores existing runs with `--reuse outputs/<run>`), and writes `eval/results.md`. `--no-acoustic` and `--no-user-glossary` give ablations. |
-| `tune_thresholds.py` | Re-scores saved runs with different acoustic-check thresholds, offline (no models or API calls). |
-| `ami_wer.py` | Speech-recognition word error rate on a sample of the public AMI meeting corpus (`--n 200`). |
-
-### 3.4 `tests/`
-
-| File | What it does |
-|---|---|
-| `test_offline.py` | 21 tests that run without a GPU, audio models or an API key (a fake LLM returns fixed replies). They cover sound-alike matching, number/negation guards, verbatim matching, evidence-gated edits, the supervisor veto, the capitalisation and deletion rules, decision and task rules, owner rules, speaker naming (roles, name variants, spelled names, wrong segment ids), paragraph transcripts, the number check, LLM reply recovery and tolerant reply parsing. |
-
-### 3.5 Sample data and reference files
-
-| File | What it is |
-|---|---|
-| `ES2008a.ihm.wav` | Sample meeting from the public [AMI Meeting Corpus](https://groups.inf.ed.ac.uk/ami/corpus/) (CC BY 4.0), used for demonstration. |
-| `comparison.md` | The official AMI decisions and actions for that meeting, used to compare against the generated record. |
-| `record.md` | A generated meeting record from a run of the pipeline. |
-| `ml_bootcamp_problem_statement.md` | The project brief this system was built for. |
-
-### 3.6 Created locally, not in the repository
-
-| Path | What it is |
-|---|---|
-| `.env` | Your API keys and settings (section 1.3). Never commit it. |
-| `.venv/` | Python virtual environment. |
-| `.cache/` | Cached LLM replies and downloaded files. |
-| `outputs/` | One folder per processed recording (section 4). |
-
 ---
 
 ## 4. Outputs of a run
@@ -243,8 +284,6 @@ Each run writes `outputs/<date>_<time>_<file name>/`:
 6. **Citations are re-anchored, not trusted.** If an LLM cites the wrong segment id, the claim is moved to the segment that really contains its quote, and then checked for meaning (a mention is not an introduction).
 7. **Speaker identity comes from the meeting.** Names and roles only from what is said; a spelled-out name is the strongest evidence; a first name and full name are one person.
 8. **Numbers must be spoken.** Any number in an LLM-written decision or task must occur in the cited lines, otherwise the item is flagged.
-9. **General prompts only.** No prompt contains content from any particular meeting; results must not depend on a meeting's content being in the prompt.
-10. **One canonical JSON**, with the Markdown rendered from it.
 
 ---
 
@@ -282,24 +321,8 @@ Set in `.env` (defaults in brackets).
 
 ---
 
-## 7. Evaluation
-
-```powershell
-python -m eval.make_synthetic_audio eval/answer_keys/meeting1_platform_sync.json --print-script   # script to read aloud
-python -m eval.run_eval                                     # run + score all recordings with answer keys
-python -m eval.run_eval --reuse outputs\<run_folder>        # score an existing run
-python -m eval.run_eval --no-acoustic                       # ablation: acoustic check off
-python -m eval.tune_thresholds outputs\<run1> outputs\<run2> # offline threshold tuning
-python -m eval.ami_wer --n 200                               # ASR word error rate on AMI
-```
-
-Results are written to `eval/results.md`. Measure on recordings the pipeline was not adjusted on; targets are 0 protected-word violations and 0 invented owners/deadlines.
-
----
-
-## 8. Known limitations
+## 7. Known limitations
 
 - Speaker labels depend on diarization quality; overlapping speech and far-field microphones reduce it. Names are only given when the meeting states them.
 - A name or number Whisper mishears can only be corrected when there is evidence of the right form (spelled out, typed in the attendee/agenda boxes, or clear from the audio); spoken numbers like "twelve fifty" can be ambiguous.
 - Groq free-tier limits (tokens per minute and per day) can pause or stop long runs; the cache means a re-run only pays for calls that did not finish.
-- Evaluation matching of decisions and tasks uses fuzzy text similarity – check the matches it prints.
