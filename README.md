@@ -4,8 +4,10 @@ Turns a recorded meeting into a raw transcript, a refined transcript and a struc
 
 **Core idea: every word in the output is traceable back to the audio.** The language models never write the record directly. They propose structured claims with citations (segment ids and verbatim quotes), and deterministic code checks each claim against the transcript and the audio before it is kept. Owners and deadlines are reported only when they were actually said; otherwise they are `unspecified`.
 
-Demo link : https://drive.google.com/file/d/1ygwfLt2ejny0b471PVv59Mmer2A-F9Gj/view?usp=sharing
+Demo link : https://drive.google.com/file/d/1ygwfLt2ejny0b471PVv59Mmer2A-F9Gj/view?usp=sharing<br>
+Output sample link : https://drive.google.com/drive/folders/1GkqZIIZqi2Pl7qzR85NeKeMhIrDjjzdS
 ---
+## Pipeline Architecture
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {
   "lineColor": "#F2A541",
@@ -84,7 +86,6 @@ flowchart LR
     linkStyle default stroke:#F2A541,stroke-width:2.5px
 ```
 ---
-Output sample link : https://drive.google.com/drive/folders/1GkqZIIZqi2Pl7qzR85NeKeMhIrDjjzdS
 
 ## 1. Installation and running
 
@@ -325,4 +326,3 @@ Set in `.env` (defaults in brackets).
 - Speaker labels depend on diarization quality; overlapping speech and far-field microphones reduce it. Names are only given when the meeting states them.
 - A name or number Whisper mishears can only be corrected when there is evidence of the right form (spelled out, typed in the attendee/agenda boxes, or clear from the audio); spoken numbers like "twelve fifty" can be ambiguous.
 - Groq free-tier limits (tokens per minute and per day) can pause or stop long runs; the cache means a re-run only pays for calls that did not finish.
-- Evaluation matching of decisions and tasks uses fuzzy text similarity – check the matches it prints.
